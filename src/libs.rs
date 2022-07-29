@@ -1,10 +1,10 @@
-use crate::parm_tables::{self, *};
+use crate::parm_tables;
 use chrono::prelude::*;
-use chrono::{Duration, TimeZone};
-use nom::bytes::complete::tag;
-use nom::number::complete::{u24, u8};
+use nom::bytes::complete::{tag, take};
+use nom::multi::count;
+use nom::number::complete::{i16, u16, u24, u8};
 use nom::number::Endianness::Little;
-use nom::sequence::{preceded, tuple};
+use nom::sequence::{preceded, tuple, Tuple};
 use nom::IResult;
 
 use super::parm_tables::Parm;
@@ -30,24 +30,21 @@ fn isParser(input: &[u8]) -> IResult<&[u8], IS> {
 }
 
 struct PDS {
-    length: usize,
     center_identification: Center,
     generating_process_id: u8,
-    grid_identification: GridID,
-    pub gds: bool,
-    pub bms: bool,
+    grid_identification: u8,
+    gds_or_bms: (bool, bool),
     unit: Parm,
     level_type_and_value: String,
     datetime: DateTime<Utc>,
-    forecast_time_unit: Duration,
-    time_range: usize,
-    average_number: u16,
-    missing_number: u8,
-    decimal_scale: u16,
+    time_range: String,
+    average_or_missing_number: i16,
+    decimal_scale: i32,
     sub_center: SubCenter,
+    missing: u8,
 }
 
-#[derive(Eq)]
+#[derive(Clone)]
 enum Center {
     WMC(u8),
     RSMC(u8),
@@ -58,7 +55,7 @@ enum Center {
     Other(u8),
 }
 
-#[derive(Eq)]
+#[derive(Clone)]
 enum SubCenter {
     NCEPReAnalysis,
     NCEPEnsemble,
@@ -77,6 +74,7 @@ enum SubCenter {
     NorthAmericaRegionalRA,
     SpaceWeather,
     ESRLGlobalSystem,
+    Other,
 }
 
 enum GridID {
@@ -84,14 +82,27 @@ enum GridID {
     Mocator,
 }
 
-fn center_parser(input: &[u8]) -> IResult<&[u8], Center> {
+fn center_parser(input: &[u8]) -> IResult<&[u8], (Center, PreConfParaTable)> {
     let (next, value) = u8(input)?;
     match value {
-        1..=9 => Ok((next, Center::WMC(value))),
-        10..=15 | 28 | 29 | 41..=44 | 51 | 69 | 70 => Ok((next, Center::RsmcAndRafc(value))),
-        16..=19 | 21 | 24..=27 | 30..=35 | 38 | 39 | 53 | 54 | 65..=67 | 71 | 74 | 75 | 78..=81 => {
-            Ok((next, Center::RSMC(value)))
+        // WMC
+        1..=6 => Ok((next, (Center::WMC(value), PreConfParaTable::NONE))),
+        7 => Ok((next, (Center::WMC(value), PreConfParaTable::NMC))),
+        8..=9 => Ok((next, (Center::WMC(value), PreConfParaTable::NONE))),
+
+        // RSMC/RAFC
+        10..=15 | 28 | 29 | 41..=44 | 51 | 69 | 70 => {
+            Ok((next, (Center::RsmcAndRafc(value), PreConfParaTable::NONE)))
         }
+
+        // RSMC
+        16..=19 | 21 | 24..=27 | 30..=35 | 38 | 39 | 53 | 65..=67 | 71 | 74 | 75 | 79..=81 => {
+            Ok((next, (Center::RSMC(value), PreConfParaTable::NONE)))
+        }
+        54 => Ok((next, (Center::RSMC(value), PreConfParaTable::CMC))),
+        78 => Ok((next, (Center::RSMC(value), PreConfParaTable::DWD))),
+
+        // NMC
         23
         | 47..=50
         | 73
@@ -104,15 +115,21 @@ fn center_parser(input: &[u8]) -> IResult<&[u8], Center> {
         | 162..=165
         | 167..=171
         | 190..=198
-        | 200..=203
+        | 201..=203
         | 222..=232
         | 234..=238
         | 240
-        | 242..=246 => Ok((next, Center::NMC(value))),
+        | 242..=246 => Ok((next, (Center::NMC(value), PreConfParaTable::NONE))),
+        200 => Ok((next, (Center::NMC(value), PreConfParaTable::LAMI))),
 
-        93 => Ok((next, Center::WAFC(value))),
-        20 | 92 => Ok((next, Center::RAFC(value))),
-        _ => Ok((next, Center::Other(value))),
+        // WAFC
+        93 => Ok((next, (Center::WAFC(value), PreConfParaTable::NONE))),
+
+        // Other
+        146 => Ok((next, (Center::Other(value), PreConfParaTable::CHM))),
+        46 => Ok((next, (Center::Other(value), PreConfParaTable::CPTEC))),
+        20 | 92 => Ok((next, (Center::RAFC(value), PreConfParaTable::NONE))),
+        _ => Ok((next, (Center::Other(value), PreConfParaTable::NONE))),
     }
 }
 
@@ -124,7 +141,7 @@ fn gds_or_bms_parser(input: &[u8]) -> IResult<&[u8], (bool, bool)> {
     Ok((next, (gds, bms)))
 }
 
-fn levels(layer_indicator: u8, center: u8, key_value: u32) -> String {
+fn levels(layer_indicator: u8, center: &PreConfParaTable, key_value: u16) -> String {
     let o11 = key_value / 256;
     let o12 = key_value % 256;
 
@@ -169,7 +186,7 @@ fn levels(layer_indicator: u8, center: u8, key_value: u32) -> String {
         121 => format!("{}-{} mb", 1100 - o11, 1100 - o12),
         125 => format!("{} cm above gnd", key_value),
         126 => {
-            if center == 7 {
+            if let c = PreConfParaTable::NMC {
                 format!("{:.2} mb", key_value as f32 * 0.01)
             } else {
                 String::from("None")
@@ -192,7 +209,7 @@ fn levels(layer_indicator: u8, center: u8, key_value: u32) -> String {
         209 => String::from("boundary layer cloud bottom"),
 
         210 => {
-            if center == 7 {
+            if let c = PreConfParaTable::NMC {
                 String::from("boundary-layer cloud top")
             } else {
                 format!("{:.2} mb", key_value as f32 * 0.01)
@@ -246,34 +263,309 @@ fn levels(layer_indicator: u8, center: u8, key_value: u32) -> String {
     };
 }
 
-fn unit_parser(
-    input: &[u8],
-    p_table: u8,
-    center: Center,
-    sub_center: SubCenter,
-    para_version: u8,
-    process: u8,
-) -> IResult<&[u8], Parm> {
-    let (next, value) = u8(input)?;
+#[derive(Clone)]
+enum PreConfParaTable {
+    NMC,
+    ECMWF,
+    DWD,
+    CMC,
+    CPTEC,
+    CHM,
+    LAMI,
+    NONE,
+}
 
-    let para_table = match center {
-        Center::WMC(value) => {
-            // figure out if NCEP opn or reanalysis
-            if value == 7 && p_table <= 3 {
-                if sub_center == SubCenter::NCEPReAnalysis {
-                    parm_tables::nceptable_reanal::NCEP_REANAL_PARM_TABLE
-                } else if sub_center == SubCenter::NWSMeteorologialDevLab {
-                    parm_tables::nceptable_mdl::NCEP_TABLE_MDL_PARM_TABLE
-                } else if (process != 80 && process != 180) || (p_table != 1 && p_table != 2) {
-                    parm_tables::nceptable_opn::NCEP_OPN_PARM_TABLE
+fn unit_parser(
+    value: u8,
+    p_table: u8,
+    center: &PreConfParaTable,
+    sub_center: &SubCenter,
+    process: u8,
+) -> Parm {
+    let mut para_table: &'static [Parm; 256];
+
+    match *center {
+        PreConfParaTable::NMC => {
+            if p_table <= 3 {
+                if let sub_center = SubCenter::NCEPReAnalysis {
+                    para_table = &parm_tables::nceptable_reanal::NCEP_REANAL_PARM_TABLE;
+                }
+                if let sub_center = SubCenter::NWSMeteorologialDevLab {
+                    para_table = &parm_tables::nceptable_mdl::NCEP_TABLE_MDL_PARM_TABLE;
+                }
+
+                if (process != 80 && process != 180) || (p_table != 1 && p_table != 2) {
+                    para_table = &parm_tables::nceptable_opn::NCEP_OPN_PARM_TABLE;
+                }
+            } else {
+                match p_table {
+                    128 => para_table = &parm_tables::nceptab_128::NCEP_128,
+                    129 => para_table = &parm_tables::nceptab_129::NCEP_129,
+                    130 => para_table = &parm_tables::nceptab_130::NCEP_130,
+                    131 => para_table = &parm_tables::nceptab_131::NCEP_131,
+                    133 => para_table = &parm_tables::nceptab_133::NCEP_133,
+                    140 => para_table = &parm_tables::nceptab_140::NCEP_140,
+                    141 => para_table = &parm_tables::nceptab_141::NCEP_141,
                 }
             }
-        },
+        }
+
+        PreConfParaTable::ECMWF => {}
+
+        PreConfParaTable::DWD | PreConfParaTable::CHM => {}
+
+        PreConfParaTable::CPTEC => {}
+
+        _ => {}
+    }
+
+    para_table[value as usize]
+}
+
+fn time_unit(input: u8) -> String {
+    // MINUTE  0
+    // HOUR    1
+    // DAY     2
+    // MONTH   3
+    // YEAR    4
+    // DECADE  5
+    // NORMAL  6
+    // CENTURY 7
+    // HOURS3  10
+    // HOURS6  11
+    // HOURS12  12
+    // MINUTES15 13
+    // MINUTES30 14
+    // SECOND  254
+    match input {
+        0 => String::from("Minute"),
+        1 => String::from("Hour"),
+        2 => String::from("Day"),
+        3 => String::from("Month"),
+        4 => String::from("Year"),
+        5 => String::from("Decade"),
+        6 => String::from("Normal"),
+        7 => String::from("Century"),
+        10 => String::from("3 Hours"),
+        11 => String::from("6 Hours"),
+        12 => String::from("12 Hours"),
+        13 => String::from("15 Minutes"),
+        14 => String::from("30 Minutes"),
+        254 => String::from("Second"),
+        _ => String::from("Undefined"),
     }
 }
 
-fn pds_parser(input: &[u8]) -> IResult<&[u8], IS> {
+fn subcenter_parser(input: &[u8]) -> IResult<&[u8], SubCenter> {
+    let (next, value) = u8(input)?;
+
+    Ok((
+        next,
+        match value {
+            1 => SubCenter::NCEPReAnalysis,
+            2 => SubCenter::NCEPEnsemble,
+            3 => SubCenter::NCEPCentral,
+            4 => SubCenter::EnvModelingCenter,
+            5 => SubCenter::WeatherPredictionCenter,
+            6 => SubCenter::OceanPredictionCenter,
+            7 => SubCenter::ClimatePredictionCenter,
+            8 => SubCenter::AviationWeatherCenter,
+            9 => SubCenter::StormPredictionCenter,
+            10 => SubCenter::NationalHurricaneCenter,
+            11 => SubCenter::NWSTechDevLab,
+            12 => SubCenter::NESDIS,
+            13 => SubCenter::FederalAviationAdministration,
+            14 => SubCenter::NWSMeteorologialDevLab,
+            15 => SubCenter::NorthAmericaRegionalRA,
+            16 => SubCenter::SpaceWeather,
+            17 => SubCenter::ESRLGlobalSystem,
+            _ => SubCenter::Other,
+        },
+    ))
+}
+
+fn init_time(input: &[u8], century: u8) -> DateTime<Utc> {
+    let year = 100 * (century as i32 - 1) + input[0] as i32;
+    let month = input[1] as u32;
+    let day = input[2] as u32;
+    let hour = input[3] as u32;
+
+    let minute = input[4] as u32;
+
+    Utc.ymd(year, month, day).and_hms(hour, minute, 0)
+}
+
+fn time_range_parser(input: &[u8]) -> IResult<&[u8], String> {
+    let (next, value) = count(u8, 4)(input)?;
+
+    let unit = time_unit(value[0]);
+
+    let time_range = value[1];
+    let p1 = value[2];
+    let p2 = value[3];
+
+    Ok((
+        next,
+        match time_range {
+            0 | 1 | 10 => format!(""),
+            2 => format!("valid {}-{}{}:", p1, p2, unit),
+
+            3 => format!("{}-{}{} ave:", p1, p2, unit),
+
+            4 => format!("{}-{}{} acc:", p1, p2, unit),
+
+            5 => format!("{}-{}{} diff:", p1, p2, unit),
+
+            6 => format!("-{} to -{} {} ave:", p1, p2, unit),
+
+            7 => format!("-{} to {} {} ave:", p1, p2, unit),
+
+            11 => {
+                if p1 > 0 {
+                    format!("init fcst {}{}:", p1, unit)
+                } else {
+                    format!("time?:")
+                }
+            }
+
+            13 => format!("nudge ana {}{}:", p1, unit),
+
+            14 => format!("rel. fcst {}{}:", p1, unit),
+
+            51 => {
+                if p1 == 0 {
+                    /* format!("clim {}{}:",p2,unit), */
+                    format!("0-{}{} product:ave@1yr:", p2, unit)
+                } else if p1 == 1 {
+                    /* format!("clim (diurnal) {}{}:",p2,unit), */
+                    format!("0-{}{} product:same-hour,ave@1yr:", p2, unit)
+                } else {
+                    format!("clim? p1={}? {}{}?:", p1, p2, unit)
+                }
+            }
+
+            113 | 123 => format!("ave@{}{}:", p2, unit),
+
+            114 | 124 => format!("acc@{}{}:", p2, unit),
+
+            115 => format!("ave of fcst:{} to {}{}:", p1, p2, unit),
+
+            116 => format!("acc of fcst:{} to {}{}:", p1, p2, unit),
+
+            118 => format!("var@{}{}:", p2, unit),
+
+            128 => format!("{}-{}{} fcst acc:ave@24hr:", p1, p2, unit),
+
+            129 => format!("{}-{}{} fcst acc:ave@{}{}:", p1, p2, unit, p2 - p1, unit),
+
+            130 => format!("{}-{}{} fcst ave:ave@24hr:", p1, p2, unit),
+
+            131 => format!("{}-{}{} fcst ave:ave@{}{}:", p1, p2, unit, p2 - p1, unit),
+
+            /* for CFS */
+            132 => format!("{}-{}{} anl:ave@1yr:", p1, p2, unit),
+
+            133 => format!("{}-{}{} fcst:ave@1yr:", p1, p2, unit),
+
+            134 => format!("{}-{}{} fcst-anl:rms@1yr:", p1, p2, unit),
+
+            135 => format!("{}-{}{} fcst-fcst_mean:rms@1yr:", p1, p2, unit),
+
+            136 => format!("{}-{}{} anl-anl_mean:rms@1yr:", p1, p2, unit),
+
+            137 => format!("{}-{}{} fcst acc:ave@6hr:", p1, p2, unit),
+
+            138 => format!("{}-{}{} fcst ave:ave@6hr:", p1, p2, unit),
+
+            139 => format!("{}-{}{} fcst acc:ave@12hr:", p1, p2, unit),
+
+            140 => format!("{}-{}{} fcst ave:ave@12hr:", p1, p2, unit),
+
+            _ => format!("time?:"),
+        },
+    ))
+}
+
+fn decimal_scale_parser(input: &[u8]) -> IResult<&[u8], i32> {
+    let (next, value) = take(2usize)(input)?;
+
+    let result = 1 - ((value[0] & 0x80) >> 6) as i32 * (((value[0] & 0x7f) << 8) + value[1]) as i32;
+
+    Ok((next, result))
+}
+
+fn pds_parser(input: &[u8]) -> IResult<&[u8], PDS> {
+    let date_time_parser = take(5usize);
+
     let length = u24(Little);
+
+    let (
+        next,
+        (
+            ll,
+            p_table,
+            center_and_preconf,
+            process,
+            grid_id,
+            flag,
+            raw_unit,
+            level_type,
+            raw_level,
+            date_time,
+            time_range,
+            average_or_acc,
+            missing,
+            init_century,
+            subcenter,
+            decimal_factor,
+        ),
+    ) = tuple((
+        length,
+        u8,
+        center_parser,
+        u8,
+        u8,
+        gds_or_bms_parser,
+        u8,
+        u8,
+        u16(Little),
+        date_time_parser,
+        time_range_parser,
+        i16(Little),
+        u8,
+        u8,
+        subcenter_parser,
+        decimal_scale_parser,
+    ))(input)?;
+
+    let unit = unit_parser(
+        raw_unit,
+        p_table,
+        &center_and_preconf.1,
+        &subcenter,
+        process,
+    );
+    let levels = levels(level_type, &center_and_preconf.1, raw_level);
+
+    let init_time = init_time(date_time, init_century);
+
+    Ok((
+        next,
+        PDS {
+            center_identification: center_and_preconf.0,
+            generating_process_id: process,
+            grid_identification: grid_id,
+            gds_or_bms: flag,
+            unit,
+            time_range,
+            level_type_and_value: levels,
+            datetime: init_time,
+            average_or_missing_number: average_or_acc,
+            decimal_scale: decimal_factor,
+            sub_center: subcenter,
+            missing,
+        },
+    ))
 }
 
 struct GDS {
