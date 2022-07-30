@@ -185,13 +185,10 @@ fn levels(layer_indicator: u8, center: &PreConfParaTable, key_value: u16) -> Str
         ),
         121 => format!("{}-{} mb", 1100 - o11, 1100 - o12),
         125 => format!("{} cm above gnd", key_value),
-        126 => {
-            if let c = PreConfParaTable::NMC {
-                format!("{:.2} mb", key_value as f32 * 0.01)
-            } else {
-                String::from("None")
-            }
-        }
+        126 => match center {
+            PreConfParaTable::NMC => format!("{:.2} mb", key_value as f32 * 0.01),
+            _ => String::from("None"),
+        },
         128 => format!(
             "{:.3}-{:.3} (sigma)",
             1.1 - o11 as f32 / 1000.0,
@@ -208,13 +205,10 @@ fn levels(layer_indicator: u8, center: &PreConfParaTable, key_value: u16) -> Str
         207 => String::from("grid-scale cloud top"),
         209 => String::from("boundary layer cloud bottom"),
 
-        210 => {
-            if let c = PreConfParaTable::NMC {
-                String::from("boundary-layer cloud top")
-            } else {
-                format!("{:.2} mb", key_value as f32 * 0.01)
-            }
-        }
+        210 => match center {
+            PreConfParaTable::NMC => String::from("boundary-layer cloud top"),
+            _ => format!("{:.2} mb", key_value as f32 * 0.01),
+        },
 
         211 => String::from("boundary layer cloud layer"),
         212 => String::from("low cloud bottom"),
@@ -282,16 +276,21 @@ fn unit_parser(
     sub_center: &SubCenter,
     process: u8,
 ) -> Parm {
-    let mut para_table: &'static [Parm; 256];
+    let mut para_table: &'static [Parm; 256] = &parm_tables::nceptable_opn::NCEP_OPN_PARM_TABLE;
 
     match *center {
         PreConfParaTable::NMC => {
             if p_table <= 3 {
-                if let sub_center = SubCenter::NCEPReAnalysis {
-                    para_table = &parm_tables::nceptable_reanal::NCEP_REANAL_PARM_TABLE;
-                }
-                if let sub_center = SubCenter::NWSMeteorologialDevLab {
-                    para_table = &parm_tables::nceptable_mdl::NCEP_TABLE_MDL_PARM_TABLE;
+                match sub_center {
+                    SubCenter::NCEPReAnalysis => {
+                        para_table = &parm_tables::nceptable_reanal::NCEP_REANAL_PARM_TABLE
+                    }
+
+                    SubCenter::NWSMeteorologialDevLab => {
+                        para_table = &parm_tables::nceptable_mdl::NCEP_TABLE_MDL_PARM_TABLE
+                    }
+
+                    _ => (),
                 }
 
                 if (process != 80 && process != 180) || (p_table != 1 && p_table != 2) {
@@ -306,6 +305,7 @@ fn unit_parser(
                     133 => para_table = &parm_tables::nceptab_133::NCEP_133,
                     140 => para_table = &parm_tables::nceptab_140::NCEP_140,
                     141 => para_table = &parm_tables::nceptab_141::NCEP_141,
+                    _ => (),
                 }
             }
         }

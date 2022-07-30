@@ -39,4 +39,5 @@ pub mod dwdtable_202;
 pub mod dwdtable_203;
 pub mod dwdtable_204;
 pub mod dwdtable_205;
+#[derive(Clone, Copy)]
 pub struct Parm(&'static str, &'static str);
