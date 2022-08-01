@@ -1,13 +1,12 @@
+use super::parm_tables::Parm;
 use crate::parm_tables;
 use chrono::prelude::*;
 use nom::bytes::complete::{tag, take};
 use nom::multi::count;
 use nom::number::complete::{i16, u16, u24, u8};
 use nom::number::Endianness::Little;
-use nom::sequence::{preceded, tuple, Tuple};
+use nom::sequence::{preceded, tuple};
 use nom::IResult;
-
-use super::parm_tables::Parm;
 
 struct IS {
     total_length: usize,
