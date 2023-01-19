@@ -1,38 +1,20 @@
-use super::parm_tables::Parm;
-use crate::parm_tables;
 use chrono::prelude::*;
 use nom::bytes::complete::{tag, take};
 use nom::multi::count;
 use nom::number::complete::{i16, u16, u24, u8};
 use nom::number::Endianness::Little;
-use nom::sequence::{preceded, tuple};
+use nom::sequence::{preceded, tuple, Tuple};
 use nom::IResult;
 
-struct IS {
-    total_length: usize,
-    version_number: u8,
-}
-fn isParser(input: &[u8]) -> IResult<&[u8], IS> {
-    let grib = tag([]);
-    let total_length = u24(Little);
-    let editon = u8;
+use super::parm_tables;
+use super::parm_tables::Parm;
 
-    let (input, (len, edition_number)) = preceded(grib, tuple((total_length, editon)))(input)?;
-
-    Ok((
-        input,
-        IS {
-            total_length: len as usize,
-            version_number: edition_number,
-        },
-    ))
-}
-
-struct PDS {
+#[derive(Debug)]
+pub struct PDS {
     center_identification: Center,
     generating_process_id: u8,
     grid_identification: u8,
-    gds_or_bms: (bool, bool),
+    pub gds_or_bms: (bool, bool),
     unit: Parm,
     level_type_and_value: String,
     datetime: DateTime<Utc>,
@@ -43,7 +25,7 @@ struct PDS {
     missing: u8,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 enum Center {
     WMC(u8),
     RSMC(u8),
@@ -54,7 +36,7 @@ enum Center {
     Other(u8),
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 enum SubCenter {
     NCEPReAnalysis,
     NCEPEnsemble,
@@ -493,7 +475,7 @@ fn decimal_scale_parser(input: &[u8]) -> IResult<&[u8], i32> {
     Ok((next, result))
 }
 
-fn pds_parser(input: &[u8]) -> IResult<&[u8], PDS> {
+pub fn pds_parser(input: &[u8]) -> IResult<&[u8], PDS> {
     let date_time_parser = take(5usize);
 
     let length = u24(Little);
@@ -565,12 +547,4 @@ fn pds_parser(input: &[u8]) -> IResult<&[u8], PDS> {
             missing,
         },
     ))
-}
-
-struct GDS {
-    length: usize,
-    nv: u8,
-    pv_or_pl: u8,
-    r_type: u8,
-    description: u8,
 }
