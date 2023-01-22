@@ -41,3 +41,9 @@ pub mod dwdtable_204;
 pub mod dwdtable_205;
 #[derive(Clone, Copy, Debug)]
 pub struct Parm(&'static str, &'static str);
+
+impl Default for Parm {
+    fn default() -> Self {
+        Parm("", "")
+    }
+}

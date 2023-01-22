@@ -2,9 +2,8 @@ use lazy_static::lazy_static;
 
 use nom::{
     bytes::complete::take,
-    character::complete::u8,
     multi::count,
-    number::complete::{be_u16, le_i16, le_i24, le_u24},
+    number::complete::{be_i16, be_i24, be_u16, be_u24, u8},
     sequence::tuple,
     IResult,
 };
@@ -21,6 +20,7 @@ lazy_static! {
 // Type declare
 #[derive(Debug)]
 pub struct GDS<'a> {
+    length: usize,
     pub nv: usize,
     pub representation: DataRepresentation,
     pv: Option<&'a [u8]>,
@@ -175,13 +175,13 @@ impl Default for DP {
                 let (next, nj) = be_u16(next)?;
                 let (next, (lat1, lon1, reso, lat2, lon2, di, dj, scan_mode, _)) =
                     tuple((
-                        le_i24,
-                        le_i24,
+                        be_i24,
+                        be_i24,
                         u8,
-                        le_i24,
-                        le_i24,
-                        le_i16,
-                        le_i16,
+                        be_i24,
+                        be_i24,
+                        be_i16,
+                        be_i16,
                         u8,
                         take(4usize),
                     ))(next)?;
@@ -212,15 +212,15 @@ impl Default for DP {
                 let (next, nj) = be_u16(next)?;
                 let (next, (lat1, lon1, reso, lat2, lon2, latin, _, scan_mode, dij, _)) =
                     tuple((
-                        le_i24,
-                        le_i24,
+                        be_i24,
+                        be_i24,
                         u8,
-                        le_i24,
-                        le_i24,
-                        le_u24,
+                        be_i24,
+                        be_i24,
+                        be_u24,
                         take(1usize),
                         u8,
-                        count(le_i24, 2),
+                        count(be_i24, 2),
                         take(8usize),
                     ))(next)?;
 
@@ -250,13 +250,13 @@ impl Default for DP {
                 let (next, ny) = be_u16(next)?;
                 let (next, (lat1, lon1, reso, lxy, center, scan, lls, _)) =
                     tuple((
-                        le_i24,
-                        le_i24,
+                        be_i24,
+                        be_i24,
                         u8,
-                        count(le_i24, 3),
+                        count(be_i24, 3),
                         u8,
                         u8,
-                        count(le_i24, 4),
+                        count(be_i24, 4),
                         take(2usize),
                     ))(next)?;
 
@@ -293,7 +293,7 @@ impl Default for DP {
                 let (next, ny) = be_u16(next)?;
 
                 let (next, (lat1, lon1, reso, lxy, center, scan, _)) =
-                    tuple((le_i24, le_i24, u8, count(le_i24, 3), u8, u8, take(4usize)))(next)?;
+                    tuple((be_i24, be_i24, u8, count(be_i24, 3), u8, u8, take(4usize)))(next)?;
 
                 return Ok((
                     next,
@@ -324,7 +324,7 @@ impl Default for DP {
                 let (next, nj) = be_u16(next)?;
 
                 let (next, (lat1, lon1, reso, lij, scan, _)) =
-                    tuple((le_i24, le_i24, u8, count(le_i24, 4), u8, take(4usize)))(next)?;
+                    tuple((be_i24, be_i24, u8, count(be_i24, 4), u8, take(4usize)))(next)?;
 
                 return Ok((
                     next,
@@ -364,22 +364,34 @@ impl DP {
 
 fn representation_parser(input: &[u8]) -> IResult<&[u8], DataRepresentation> {
     let (next, projection_type_mask) = u8(input)?;
+
     return E.run_event(next, projection_type_mask);
 }
 
 pub fn gds_parser(input: &[u8]) -> IResult<&[u8], GDS> {
-    let (next, gds_length) = le_u24(input)?;
-    let nv_p = u8;
-    let pv_or_pl_p = u8;
+    let (next, gds_length) = be_u24(input)?;
 
-    let (next, (nv, pv_pl, data_repr)) = tuple((nv_p, pv_or_pl_p, representation_parser))(next)?;
+    let (next, (nv, pv_pl, data_repr)) = tuple((u8, u8, representation_parser))(next)?;
+
+    if pv_pl == 255 {
+        return Ok((
+            next,
+            GDS {
+                length: gds_length as usize,
+                nv: nv as usize,
+                representation: data_repr,
+                pv: None,
+                pl: None,
+            },
+        ));
+    }
 
     if nv == 0 {
-        assert!(pv_pl != 255);
         let (next, pl_list) = take(data_repr.row_length * 2)(next)?;
         return Ok((
             next,
             GDS {
+                length: gds_length as usize,
                 nv: nv as usize,
                 representation: data_repr,
                 pv: None,
@@ -392,6 +404,7 @@ pub fn gds_parser(input: &[u8]) -> IResult<&[u8], GDS> {
         return Ok((
             next,
             GDS {
+                length: gds_length as usize,
                 nv: nv as usize,
                 representation: data_repr,
                 pv: Some(pv_list),

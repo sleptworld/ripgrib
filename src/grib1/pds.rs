@@ -1,28 +1,56 @@
 use chrono::prelude::*;
-use nom::bytes::complete::{tag, take};
-use nom::multi::count;
-use nom::number::complete::{i16, u16, u24, u8};
-use nom::number::Endianness::Little;
-use nom::sequence::{preceded, tuple, Tuple};
-use nom::IResult;
+use nom::bytes::complete::take;
+use nom::{
+    multi::count,
+    number::complete::{be_i16, be_u16, be_u24, u8},
+};
+use nom::{sequence::tuple, IResult};
 
 use super::parm_tables;
 use super::parm_tables::Parm;
 
 #[derive(Debug)]
+enum ProductType {
+    Anal,
+    Fcst,
+    Unknown,
+}
+
+#[derive(Debug)]
 pub struct PDS {
-    center_identification: Center,
-    generating_process_id: u8,
-    grid_identification: u8,
+    _length: usize,
+    _center_identification: Center,
+    _generating_process_id: u8,
+    _grid_identification: u8,
     pub gds_or_bms: (bool, bool),
-    unit: Parm,
-    level_type_and_value: String,
-    datetime: DateTime<Utc>,
-    time_range: String,
-    average_or_missing_number: i16,
-    decimal_scale: i32,
-    sub_center: SubCenter,
-    missing: u8,
+    _unit: Parm,
+    _level_type_and_value: String,
+    _datetime: DateTime<Utc>,
+    _time_range: String,
+    _average_or_missing_number: i16,
+    _decimal_scale: i16,
+    _sub_center: SubCenter,
+    _missing: u8,
+}
+
+impl Default for PDS {
+    fn default() -> Self {
+        PDS {
+            _length: 0,
+            _center_identification: Center::Other(100),
+            _generating_process_id: 0,
+            _grid_identification: 0,
+            gds_or_bms: (false, false),
+            _unit: Parm::default(),
+            _level_type_and_value: String::new(),
+            _datetime: Utc::now(),
+            _time_range: String::new(),
+            _average_or_missing_number: 0,
+            _decimal_scale: 0,
+            _sub_center: SubCenter::Other,
+            _missing: 0,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -381,9 +409,10 @@ fn time_range_parser(input: &[u8]) -> IResult<&[u8], String> {
 
     let unit = time_unit(value[0]);
 
-    let time_range = value[1];
-    let p1 = value[2];
-    let p2 = value[3];
+    let p1 = value[1];
+    let p2 = value[2];
+
+    let time_range = value[3];
 
     Ok((
         next,
@@ -467,18 +496,17 @@ fn time_range_parser(input: &[u8]) -> IResult<&[u8], String> {
     ))
 }
 
-fn decimal_scale_parser(input: &[u8]) -> IResult<&[u8], i32> {
-    let (next, value) = take(2usize)(input)?;
-
-    let result = 1 - ((value[0] & 0x80) >> 6) as i32 * (((value[0] & 0x7f) << 8) + value[1]) as i32;
+fn decimal_scale_parser(input: &[u8]) -> IResult<&[u8], i16> {
+    // let result = 1 - ((value[0] & 0x80) >> 6) as i32 * (((value[0] & 0x7f) << 8) + value[1]) as i32;
+    //
+    let (next, result) = be_i16(input)?;
 
     Ok((next, result))
 }
 
 pub fn pds_parser(input: &[u8]) -> IResult<&[u8], PDS> {
     let date_time_parser = take(5usize);
-
-    let length = u24(Little);
+    let length = be_u24;
 
     let (
         next,
@@ -509,10 +537,10 @@ pub fn pds_parser(input: &[u8]) -> IResult<&[u8], PDS> {
         gds_or_bms_parser,
         u8,
         u8,
-        u16(Little),
+        be_u16,
         date_time_parser,
         time_range_parser,
-        i16(Little),
+        be_i16,
         u8,
         u8,
         subcenter_parser,
@@ -526,6 +554,7 @@ pub fn pds_parser(input: &[u8]) -> IResult<&[u8], PDS> {
         &subcenter,
         process,
     );
+
     let levels = levels(level_type, &center_and_preconf.1, raw_level);
 
     let init_time = init_time(date_time, init_century);
@@ -533,18 +562,19 @@ pub fn pds_parser(input: &[u8]) -> IResult<&[u8], PDS> {
     Ok((
         next,
         PDS {
-            center_identification: center_and_preconf.0,
-            generating_process_id: process,
-            grid_identification: grid_id,
+            _length: ll as usize,
+            _center_identification: center_and_preconf.0,
+            _generating_process_id: process,
+            _grid_identification: grid_id,
             gds_or_bms: flag,
-            unit,
-            time_range,
-            level_type_and_value: levels,
-            datetime: init_time,
-            average_or_missing_number: average_or_acc,
-            decimal_scale: decimal_factor,
-            sub_center: subcenter,
-            missing,
+            _unit: unit,
+            _time_range: time_range,
+            _level_type_and_value: levels,
+            _datetime: init_time,
+            _average_or_missing_number: average_or_acc,
+            _decimal_scale: decimal_factor,
+            _sub_center: subcenter,
+            _missing: missing,
         },
     ))
 }

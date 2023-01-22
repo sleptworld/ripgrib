@@ -1,6 +1,6 @@
 use nom::{
     bytes::complete::take,
-    number::complete::{le_u16, le_u24, u8},
+    number::complete::{be_u16, be_u24, u8},
     sequence::tuple,
     IResult,
 };
@@ -72,7 +72,7 @@ impl<'a> Iterator for BitMap<'a> {
 }
 
 pub fn bms_parser(input: &[u8]) -> IResult<&[u8], BMS> {
-    let (mut next, (length, unused, b_type)) = tuple((le_u24, u8, le_u16))(input)?;
+    let (mut next, (length, unused, b_type)) = tuple((be_u24, u8, be_u16))(input)?;
 
     let map_type = if b_type == 0 {
         BitmapType::Follows
@@ -81,7 +81,7 @@ pub fn bms_parser(input: &[u8]) -> IResult<&[u8], BMS> {
     };
 
     let map: Option<BitMap> = if let BitmapType::Follows = map_type {
-        let (n, map_part) = take((length - 7) as usize)(next)?;
+        let (n, map_part) = take((length - 6) as usize)(next)?;
         next = n;
         let len = map_part.len();
         Some(BitMap::new(&map_part, unused as usize))
